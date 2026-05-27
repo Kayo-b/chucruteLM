@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chucrutelm"
+version = "0.1.0"
+description = "Tibia-first screen-only behavioral cloning and live-control project"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets>=2.21.0",
+    "evdev>=1.7.1",
+    "mss>=9.0.1",
+    "numpy>=1.26.0",
+    "Pillow>=10.4.0",
+    "pynput>=1.7.7",
+    "torch>=2.4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
