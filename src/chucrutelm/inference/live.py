@@ -50,7 +50,7 @@ class LivePolicyRunner:
                 ascii_text = self.ascii_converter.convert_simple(captured.grayscale)
                 numeric_features = self.profile.extract_numeric_features(captured.grayscale)
                 action_name, logits = self.runtime.predict(ascii_text, numeric_features)
-                result = self.action_executor.apply(action_name)
+                result = self.action_executor.apply(action_name, capture_region=captured.region)
                 executed += 1
                 if self.config.print_actions:
                     confidence = float(logits.softmax(dim=-1).max().item())
@@ -69,5 +69,7 @@ class LivePolicyRunner:
             suffix_parts.append(f"taps={','.join(result.tapped_keys)}")
         if result.clicked_buttons:
             suffix_parts.append(f"buttons={','.join(result.clicked_buttons)}")
+        if result.pointer_target is not None:
+            suffix_parts.append(f"pointer={result.pointer_target[0]},{result.pointer_target[1]}")
         suffix = f" ({'; '.join(suffix_parts)})" if suffix_parts else ""
         print(f"{result.action_name} confidence={confidence:.2%}{suffix}")

@@ -11,8 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from chucrutelm.actions import ActionSpace
 from chucrutelm.config import GridSize, ModelConfig, TrainingConfig
 from chucrutelm.model import AsciiGridPolicyModel, AsciiGridTokenizer
-from chucrutelm.profiles import default_action_names
-from chucrutelm.training import BehaviorCloningDataset, BehaviorCloningTrainer, split_dataset
+from chucrutelm.profiles import build_profile, default_action_names
+from chucrutelm.training import (
+    BehaviorCloningDataset,
+    BehaviorCloningTrainer,
+    recorded_action_names,
+    split_dataset,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,20 +38,34 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    action_names = (
+    manifest_path = args.data / "manifest.jsonl"
+    configured_action_names = (
         [name.strip() for name in args.actions.split(",") if name.strip()]
         if args.actions is not None
         else default_action_names(args.profile_name)
     )
+    profile = build_profile(args.profile_name, action_names=configured_action_names)
+    action_names = (
+        configured_action_names
+        if args.actions is not None
+        else recorded_action_names(
+            manifest_path,
+            preferred_order=configured_action_names,
+            profile=profile,
+        )
+    )
+    if not action_names:
+        raise SystemExit(f"No labeled actions were found in {manifest_path}")
     action_space = ActionSpace.from_names(action_names)
     tokenizer = AsciiGridTokenizer()
     feature_names = [name.strip() for name in args.feature_names.split(",") if name.strip()] or None
     dataset = BehaviorCloningDataset(
-        manifest_path=args.data / "manifest.jsonl",
+        manifest_path=manifest_path,
         tokenizer=tokenizer,
         action_space=action_space,
         grid_size=GridSize(args.grid_width, args.grid_height),
         feature_names=feature_names,
+        profile=profile,
     )
     train_dataset, eval_dataset = split_dataset(dataset, eval_ratio=args.eval_split, seed=42)
     model_config = ModelConfig(

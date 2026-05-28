@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from chucrutelm.capture.linux import (
+    EvdevInputObserver,
     GrimScreenCaptureBackend,
+    _BaseInputObserver,
     choose_capture_backend,
     choose_input_backend,
     find_window,
     is_wayland_session,
     parse_hyprctl_clients,
+    resolve_evdev_device,
     resolve_capture_region,
 )
 from chucrutelm.config import CaptureRegion
@@ -104,6 +108,116 @@ class CaptureBackendSelectionTest(unittest.TestCase):
                 window_title="Tibia",
             )
         self.assertEqual(region, CaptureRegion(22, 152, 1300, 900))
+
+    def test_resolve_evdev_device_prefers_keyboard_only_match(self) -> None:
+        descriptions = (
+            {
+                "path": "/dev/input/event9",
+                "name": "Corne Keyboard",
+                "keyboard": True,
+                "mouse": True,
+                "pointer": True,
+            },
+            {
+                "path": "/dev/input/event17",
+                "name": "Corne Keyboard",
+                "keyboard": True,
+                "mouse": False,
+                "pointer": False,
+            },
+        )
+        resolved = resolve_evdev_device("Corne Keyboard", kind="keyboard", descriptions=descriptions)
+        self.assertEqual(resolved, "/dev/input/event17")
+
+    def test_resolve_evdev_device_prefers_pointer_mouse_match(self) -> None:
+        descriptions = (
+            {
+                "path": "/dev/input/event4",
+                "name": "Logitech G502 HERO",
+                "keyboard": False,
+                "mouse": True,
+                "pointer": False,
+            },
+            {
+                "path": "/dev/input/event5",
+                "name": "Logitech G502 HERO",
+                "keyboard": False,
+                "mouse": True,
+                "pointer": True,
+            },
+        )
+        resolved = resolve_evdev_device("Logitech G502 HERO", kind="mouse", descriptions=descriptions)
+        self.assertEqual(resolved, "/dev/input/event5")
+
+    def test_resolve_evdev_device_raises_when_name_is_missing(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Available mouse devices: Logitech G502 HERO"):
+            resolve_evdev_device(
+                "Corne Keyboard",
+                kind="mouse",
+                descriptions=(
+                    {
+                        "path": "/dev/input/event5",
+                        "name": "Logitech G502 HERO",
+                        "keyboard": False,
+                        "mouse": True,
+                        "pointer": True,
+                    },
+                ),
+            )
+
+    def test_input_snapshot_drains_tapped_inputs(self) -> None:
+        observer = _BaseInputObserver()
+        observer._set_key("up", True)
+        observer._set_button("left", True)
+
+        first = observer.snapshot()
+        self.assertEqual(first.pressed_keys, ("up",))
+        self.assertEqual(first.pressed_buttons, ("left",))
+        self.assertEqual(first.tapped_keys, ("up",))
+        self.assertEqual(first.tapped_buttons, ("left",))
+
+        second = observer.snapshot()
+        self.assertEqual(second.pressed_keys, ("up",))
+        self.assertEqual(second.pressed_buttons, ("left",))
+        self.assertEqual(second.tapped_keys, ())
+        self.assertEqual(second.tapped_buttons, ())
+
+    def test_evdev_repeat_events_do_not_create_extra_taps(self) -> None:
+        observer = EvdevInputObserver()
+        ecodes = SimpleNamespace(
+            EV_KEY=1,
+            BTN_MOUSE=272,
+            BTN_JOYSTICK=288,
+            KEY={103: "KEY_UP"},
+        )
+
+        observer._handle_event(SimpleNamespace(type=ecodes.EV_KEY, code=103, value=1), ecodes)
+        observer._handle_event(SimpleNamespace(type=ecodes.EV_KEY, code=103, value=2), ecodes)
+
+        first = observer.snapshot()
+        self.assertEqual(first.pressed_keys, ("up",))
+        self.assertEqual(first.tapped_keys, ("up",))
+
+        observer._handle_event(SimpleNamespace(type=ecodes.EV_KEY, code=103, value=0), ecodes)
+        second = observer.snapshot()
+        self.assertEqual(second.pressed_keys, ())
+        self.assertEqual(second.tapped_keys, ())
+
+    def test_evdev_mouse_buttons_normalize_numeric_codes(self) -> None:
+        observer = EvdevInputObserver()
+        ecodes = SimpleNamespace(
+            EV_KEY=1,
+            BTN_MOUSE=272,
+            BTN_JOYSTICK=288,
+            KEY={272: 272, 273: 273},
+        )
+
+        observer._handle_event(SimpleNamespace(type=ecodes.EV_KEY, code=272, value=1), ecodes)
+        observer._handle_event(SimpleNamespace(type=ecodes.EV_KEY, code=273, value=1), ecodes)
+
+        first = observer.snapshot()
+        self.assertEqual(first.pressed_buttons, ("left", "right"))
+        self.assertEqual(first.tapped_buttons, ("left", "right"))
 
 
 if __name__ == "__main__":

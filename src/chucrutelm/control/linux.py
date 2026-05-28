@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import time
 from typing import Protocol
 
+from ..config import CaptureRegion
+from ..input_names import normalize_button_name, normalize_key_name
 from ..profiles import GameProfile
 
 _KEY_ALIASES = {
@@ -45,7 +47,7 @@ _BUTTON_ALIASES = {
 def key_name_to_linux_code(key_name: str) -> int:
     from evdev import ecodes
 
-    normalized = key_name.strip().lower()
+    normalized = normalize_key_name(key_name)
     code_name = _KEY_ALIASES.get(normalized, f"KEY_{normalized.upper()}")
     if not hasattr(ecodes, code_name):
         raise ValueError(f"Unsupported Linux key name: {key_name}")
@@ -55,7 +57,7 @@ def key_name_to_linux_code(key_name: str) -> int:
 def button_name_to_linux_code(button_name: str) -> int:
     from evdev import ecodes
 
-    normalized = button_name.strip().lower()
+    normalized = normalize_button_name(button_name)
     code_name = _BUTTON_ALIASES.get(normalized, f"BTN_{normalized.upper()}")
     if not hasattr(ecodes, code_name):
         raise ValueError(f"Unsupported Linux button name: {button_name}")
@@ -70,6 +72,8 @@ class ActionOutputBackend(Protocol):
     def press_button(self, button_name: str) -> None: ...
 
     def release_button(self, button_name: str) -> None: ...
+
+    def move_pointer_rel(self, dx: int, dy: int) -> None: ...
 
     def close(self) -> None: ...
 
@@ -86,6 +90,9 @@ class NoopActionBackend:
 
     def release_button(self, button_name: str) -> None:
         del button_name
+
+    def move_pointer_rel(self, dx: int, dy: int) -> None:
+        del dx, dy
 
     def close(self) -> None:
         return None
@@ -108,7 +115,9 @@ class UinputActionBackend:
             {key_name_to_linux_code(name) for name in key_names}
             | {button_name_to_linux_code(name) for name in button_names}
         )
-        capabilities = {ecodes.EV_KEY: codes} if codes else {}
+        capabilities = {ecodes.EV_REL: [ecodes.REL_X, ecodes.REL_Y]}
+        if codes:
+            capabilities[ecodes.EV_KEY] = codes
         try:
             self._ui = UInput(capabilities, name=device_name)
         except OSError as exc:
@@ -144,6 +153,11 @@ class UinputActionBackend:
     def release_button(self, button_name: str) -> None:
         self._write_key_event(button_name_to_linux_code(button_name), 0)
 
+    def move_pointer_rel(self, dx: int, dy: int) -> None:
+        self._ui.write(self._ecodes.EV_REL, self._ecodes.REL_X, dx)
+        self._ui.write(self._ecodes.EV_REL, self._ecodes.REL_Y, dy)
+        self._ui.syn()
+
     def close(self) -> None:
         self._ui.close()
 
@@ -158,6 +172,7 @@ class ExecutedAction:
     held_keys: tuple[str, ...]
     tapped_keys: tuple[str, ...]
     clicked_buttons: tuple[str, ...]
+    pointer_target: tuple[int, int] | None = None
 
 
 class ActionExecutor:
@@ -170,6 +185,8 @@ class ActionExecutor:
         key_repeat_s: float = 0.2,
         button_press_s: float = 0.05,
         button_repeat_s: float = 0.2,
+        pointer_repeat_s: float | None = None,
+        initial_pointer_position: tuple[int, int] | None = None,
         time_fn: Callable[[], float] = time.monotonic,
         sleep_fn: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -179,19 +196,28 @@ class ActionExecutor:
         self.key_repeat_s = key_repeat_s
         self.button_press_s = button_press_s
         self.button_repeat_s = button_repeat_s
+        self.pointer_repeat_s = button_repeat_s if pointer_repeat_s is None else pointer_repeat_s
         self._time_fn = time_fn
         self._sleep_fn = sleep_fn
         self._held_keys: set[str] = set()
         self._last_action_name: str | None = None
         self._last_key_emit: dict[str, float] = {}
         self._last_button_emit: dict[str, float] = {}
+        self._last_pointer_emit: dict[str, float] = {}
+        self._pointer_position = initial_pointer_position
 
-    def apply(self, action_name: str) -> ExecutedAction:
+    def apply(
+        self,
+        action_name: str,
+        *,
+        capture_region: CaptureRegion | None = None,
+    ) -> ExecutedAction:
         target_hold_keys = set(self.profile.held_keys_for_action(action_name))
         target_tap_keys = tuple(sorted(set(self.profile.tapped_keys_for_action(action_name))))
         target_buttons = tuple(sorted(set(self.profile.clicked_buttons_for_action(action_name))))
         tapped_keys: list[str] = []
         clicked_buttons: list[str] = []
+        pointer_target: tuple[int, int] | None = None
 
         for key_name in sorted(self._held_keys - target_hold_keys):
             self.backend.release_key(key_name)
@@ -220,12 +246,37 @@ class ActionExecutor:
                 self._last_button_emit[button_name] = now
                 clicked_buttons.append(button_name)
 
+        if capture_region is not None:
+            pointer_action = self.profile.resolve_pointer_action(action_name, capture_region)
+        else:
+            pointer_action = None
+        if pointer_action is not None:
+            last_emit = self._last_pointer_emit.get(action_name)
+            if self._last_action_name != action_name or last_emit is None or now - last_emit >= self.pointer_repeat_s:
+                if self._pointer_position is None:
+                    raise RuntimeError(
+                        "Pointer action execution requires an initial pointer position. "
+                        "Provide one when constructing the action executor."
+                    )
+                pointer_target = pointer_action.pointer_target
+                dx = pointer_target[0] - self._pointer_position[0]
+                dy = pointer_target[1] - self._pointer_position[1]
+                if dx != 0 or dy != 0:
+                    self.backend.move_pointer_rel(dx, dy)
+                self.backend.press_button(pointer_action.button)
+                self._sleep_fn(self.button_press_s)
+                self.backend.release_button(pointer_action.button)
+                self._pointer_position = pointer_target
+                self._last_pointer_emit[action_name] = now
+                clicked_buttons.append(pointer_action.button)
+
         self._last_action_name = action_name
         return ExecutedAction(
             action_name=action_name,
             held_keys=tuple(sorted(self._held_keys)),
             tapped_keys=tuple(tapped_keys),
             clicked_buttons=tuple(clicked_buttons),
+            pointer_target=pointer_target,
         )
 
     def release_all(self) -> None:

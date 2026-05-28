@@ -49,7 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--key-repeat-ms", type=float, default=200.0)
     parser.add_argument("--button-press-ms", type=float, default=50.0)
     parser.add_argument("--button-repeat-ms", type=float, default=200.0)
+    parser.add_argument("--pointer-repeat-ms", type=float, default=200.0)
     parser.add_argument("--device-name", default="chucrutelm-virtual-input")
+    parser.add_argument("--pointer-start-x", type=int)
+    parser.add_argument("--pointer-start-y", type=int)
+    parser.add_argument("--tibia-viewport-left", type=int, default=0)
+    parser.add_argument("--tibia-viewport-top", type=int, default=0)
+    parser.add_argument("--tibia-viewport-width", type=int)
+    parser.add_argument("--tibia-viewport-height", type=int)
+    parser.add_argument("--tibia-grid-width", type=int, default=15)
+    parser.add_argument("--tibia-grid-height", type=int, default=11)
+    parser.add_argument("--tibia-center-x", type=int, default=7)
+    parser.add_argument("--tibia-center-y", type=int, default=5)
     parser.add_argument("--print-actions", action="store_true")
     return parser
 
@@ -59,7 +70,7 @@ def main() -> None:
     from chucrutelm.capture import ScreenCaptureBackend, list_open_windows, resolve_capture_region
     from chucrutelm.control import ActionExecutor, NoopActionBackend, UinputActionBackend
     from chucrutelm.inference import LivePolicyConfig, LivePolicyRunner, PolicyRuntime
-    from chucrutelm.profiles import build_profile, default_window_selectors
+    from chucrutelm.profiles import TibiaViewportConfig, build_profile, default_window_selectors
 
     args = build_parser().parse_args()
     if args.list_windows:
@@ -86,11 +97,30 @@ def main() -> None:
         )
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
+    if (args.pointer_start_x is None) != (args.pointer_start_y is None):
+        raise SystemExit("--pointer-start-x and --pointer-start-y must be provided together.")
     profile = build_profile(
         args.profile_name,
         action_names=action_names,
         key_bindings=parse_bindings(args.key_binding),
         button_bindings=parse_bindings(args.button_binding),
+        tibia_viewport=TibiaViewportConfig(
+            left=args.tibia_viewport_left,
+            top=args.tibia_viewport_top,
+            width=args.tibia_viewport_width,
+            height=args.tibia_viewport_height,
+            grid_width=args.tibia_grid_width,
+            grid_height=args.tibia_grid_height,
+            center_x=args.tibia_center_x,
+            center_y=args.tibia_center_y,
+        )
+        if args.profile_name == "tibia"
+        else None,
+    )
+    pointer_start = (
+        (args.pointer_start_x, args.pointer_start_y)
+        if args.pointer_start_x is not None and args.pointer_start_y is not None
+        else profile.default_pointer_position(region)
     )
 
     if args.action_backend == "uinput":
@@ -113,6 +143,8 @@ def main() -> None:
             key_repeat_s=args.key_repeat_ms / 1000.0,
             button_press_s=args.button_press_ms / 1000.0,
             button_repeat_s=args.button_repeat_ms / 1000.0,
+            pointer_repeat_s=args.pointer_repeat_ms / 1000.0,
+            initial_pointer_position=pointer_start,
         ),
         config=LivePolicyConfig(
             fps=args.fps,

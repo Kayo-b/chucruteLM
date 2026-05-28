@@ -15,9 +15,24 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 
 cd "${repo_root}"
 
-python scripts/record_session.py \
-  --output "${output_dir}" \
-  --fps 5 \
-  --duration "${duration}" \
-  --profile-name tibia \
-  --input-device /dev/input/event17
+python_bin="python"
+if [[ -x "${repo_root}/.venv/bin/python" ]]; then
+  python_bin="${repo_root}/.venv/bin/python"
+fi
+
+mapfile -t input_devices < <("${python_bin}" scripts/resolve_record_input_devices.py)
+
+cmd=(
+  "${python_bin}" scripts/record_session.py
+  --output "${output_dir}"
+  --fps 5
+  --duration "${duration}"
+  --profile-name tibia
+)
+
+for device in "${input_devices[@]}"; do
+  echo "${device}"
+  cmd+=(--input-device "${device}")
+done
+
+exec "${cmd[@]}"

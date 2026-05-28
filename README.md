@@ -31,12 +31,14 @@ python scripts/record_session.py \
   --fps 5 \
   --duration 10 \
   --profile-name tibia \
-  --input-device /dev/input/event17
+  --input-device /dev/input/eventX \
+  --input-device /dev/input/eventY
 
 # Inspect the recording
 python scripts/inspect_dataset.py --data data/session-001
 
-# Or use the wrapper for a timed session with an auto-generated output directory
+# Or use the wrapper for a timed session with an auto-generated output directory.
+# It resolves the current Corne Keyboard and Logitech G502 HERO event devices on each run.
 ./scripts/run_record_session.sh 10
 
 # If your current shell is missing the `input` group, use the group wrapper
@@ -50,6 +52,20 @@ python scripts/train_behavior_cloner.py \
 
 # Run the trained policy live (dry-run by default; use --action-backend uinput to emit input)
 python scripts/run_live_policy.py \
+  --checkpoint output/base-policy \
+  --fps 5 \
+  --profile-name tibia \
+  --print-actions
+
+# Or use the shell wrapper to always run with the uinput backend
+./scripts/run_live_policy.sh \
+  --checkpoint output/base-policy \
+  --fps 5 \
+  --profile-name tibia \
+  --print-actions
+
+# If your current shell is missing refreshed group membership, use the group wrapper
+./scripts/run_live_policy_input.sh \
   --checkpoint output/base-policy \
   --fps 5 \
   --profile-name tibia \
@@ -71,15 +87,30 @@ requires permission to read `/dev/input/event*`. You can override either choice 
 `--capture-backend` / `--input-backend`, and you can pin specific evdev devices with repeated
 `--input-device /dev/input/event...` flags.
 
+`scripts/run_record_session.sh` now auto-resolves the readable evdev paths for:
+
+- `Corne Keyboard` as the keyboard device
+- `Logitech G502 HERO` as the mouse device
+
 Live action emission uses a separate backend:
 
 - `noop`: prediction-only dry run, prints actions but sends nothing
-- `uinput`: emits Linux keyboard/mouse button events through a virtual input device
+- `uinput`: emits Linux keyboard/mouse button events through a virtual input device, including
+  relative pointer motion for Tibia tile-click actions
 
 `uinput` requires `/dev/uinput` to exist and be writable.
 
 Tibia live execution pulses keyboard actions by default instead of holding them indefinitely, which
 fits tile-based movement and shortcut-style hotkeys better than a raw key-down latch.
+
+The Tibia profile also includes discrete tile-click actions around the player
+(`click_tile_north`, `click_tile_south`, `click_tile_east`, `click_tile_west`, plus diagonals).
+Use `--tibia-viewport-left`, `--tibia-viewport-top`, `--tibia-viewport-width`,
+`--tibia-viewport-height`, `--tibia-grid-width`, `--tibia-grid-height`,
+`--tibia-center-x`, and `--tibia-center-y` to calibrate the playable map viewport inside the
+captured Tibia window. The live runner tracks pointer clicks relative to an initial cursor
+position; by default it uses the configured viewport center, and you can override that with
+`--pointer-start-x` / `--pointer-start-y`.
 
 To inspect the available evdev paths before recording:
 

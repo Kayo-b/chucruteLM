@@ -13,6 +13,7 @@ import time
 from typing import TYPE_CHECKING
 
 from ..config import CaptureRegion
+from ..input_names import normalize_button_name, normalize_key_name
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -179,6 +180,55 @@ def describe_evdev_devices() -> list[dict[str, object]]:
     return descriptions
 
 
+def resolve_evdev_device(
+    device_name: str,
+    *,
+    kind: str,
+    descriptions: Sequence[Mapping[str, object]] | None = None,
+) -> str:
+    if kind not in {"keyboard", "mouse"}:
+        raise ValueError(f"Unsupported evdev device kind: {kind}")
+
+    available = list(describe_evdev_devices() if descriptions is None else descriptions)
+    exact_name_matches = [entry for entry in available if entry.get("name") == device_name]
+    candidates = [entry for entry in exact_name_matches if entry.get(kind)]
+    if not candidates:
+        available_names = sorted(
+            {
+                str(entry["name"])
+                for entry in available
+                if entry.get("name") is not None and entry.get(kind)
+            }
+        )
+        available_label = ", ".join(available_names) if available_names else "none"
+        raise RuntimeError(
+            f"Unable to find a readable {kind} device named {device_name!r}. "
+            f"Available {kind} devices: {available_label}."
+        )
+
+    def candidate_score(entry: Mapping[str, object]) -> tuple[int, str]:
+        path = str(entry["path"])
+        score = 0
+        if kind == "keyboard":
+            if entry.get("keyboard"):
+                score += 4
+            if not entry.get("mouse"):
+                score += 2
+            if not entry.get("pointer"):
+                score += 1
+        else:
+            if entry.get("mouse"):
+                score += 4
+            if entry.get("pointer"):
+                score += 2
+            if not entry.get("keyboard"):
+                score += 1
+        return (score, path)
+
+    best_match = max(candidates, key=candidate_score)
+    return str(best_match["path"])
+
+
 def is_wayland_session(env: Mapping[str, str] | None = None) -> bool:
     current_env = _session_env(env)
     if current_env.get("HYPRLAND_INSTANCE_SIGNATURE"):
@@ -262,6 +312,7 @@ def choose_input_backend(
 @dataclass
 class CapturedFrame:
     timestamp: float
+    region: CaptureRegion
     rgb: np.ndarray
     grayscale: np.ndarray
 
@@ -271,6 +322,8 @@ class InputSnapshot:
     timestamp: float
     pressed_keys: tuple[str, ...]
     pressed_buttons: tuple[str, ...]
+    tapped_keys: tuple[str, ...] = ()
+    tapped_buttons: tuple[str, ...] = ()
     pointer_x: int = 0
     pointer_y: int = 0
     scroll_x: int = 0
@@ -297,7 +350,7 @@ class MssScreenCaptureBackend:
         image = Image.frombytes("RGB", shot.size, shot.rgb)
         rgb = np.asarray(image, dtype=np.uint8)
         gray = np.asarray(image.convert("L"), dtype=np.uint8)
-        return CapturedFrame(timestamp=time.time(), rgb=rgb, grayscale=gray)
+        return CapturedFrame(timestamp=time.time(), region=self.region, rgb=rgb, grayscale=gray)
 
 
 class GrimScreenCaptureBackend:
@@ -330,7 +383,7 @@ class GrimScreenCaptureBackend:
         image = Image.open(BytesIO(completed.stdout)).convert("RGB")
         rgb = np.asarray(image, dtype=np.uint8)
         gray = np.asarray(image.convert("L"), dtype=np.uint8)
-        return CapturedFrame(timestamp=time.time(), rgb=rgb, grayscale=gray)
+        return CapturedFrame(timestamp=time.time(), region=self.region, rgb=rgb, grayscale=gray)
 
 
 class ScreenCaptureBackend:
@@ -351,6 +404,8 @@ class _BaseInputObserver:
         self._lock = Lock()
         self._pressed_keys: set[str] = set()
         self._pressed_buttons: set[str] = set()
+        self._tapped_keys: list[str] = []
+        self._tapped_buttons: list[str] = []
         self._pointer_x = 0
         self._pointer_y = 0
         self._scroll_x = 0
@@ -358,10 +413,16 @@ class _BaseInputObserver:
 
     def snapshot(self) -> InputSnapshot:
         with self._lock:
+            tapped_keys = tuple(self._tapped_keys)
+            tapped_buttons = tuple(self._tapped_buttons)
+            self._tapped_keys.clear()
+            self._tapped_buttons.clear()
             return InputSnapshot(
                 timestamp=time.time(),
                 pressed_keys=tuple(sorted(self._pressed_keys)),
                 pressed_buttons=tuple(sorted(self._pressed_buttons)),
+                tapped_keys=tapped_keys,
+                tapped_buttons=tapped_buttons,
                 pointer_x=self._pointer_x,
                 pointer_y=self._pointer_y,
                 scroll_x=self._scroll_x,
@@ -372,6 +433,7 @@ class _BaseInputObserver:
         with self._lock:
             if pressed:
                 self._pressed_keys.add(name)
+                self._tapped_keys.append(name)
             else:
                 self._pressed_keys.discard(name)
 
@@ -379,6 +441,7 @@ class _BaseInputObserver:
         with self._lock:
             if pressed:
                 self._pressed_buttons.add(name)
+                self._tapped_buttons.append(name)
             else:
                 self._pressed_buttons.discard(name)
 
@@ -450,13 +513,13 @@ class PynputInputObserver(_BaseInputObserver):
     @staticmethod
     def _normalize_key(key: object) -> str:
         if hasattr(key, "char") and key.char is not None:
-            return str(key.char).lower()
+            return normalize_key_name(key.char)
         key_text = str(key).lower()
-        return key_text.replace("key.", "")
+        return normalize_key_name(key_text)
 
     @staticmethod
     def _normalize_button(button: object) -> str:
-        return str(button).lower().replace("button.", "")
+        return normalize_button_name(button)
 
 
 class EvdevInputObserver(_BaseInputObserver):
@@ -553,10 +616,13 @@ class EvdevInputObserver(_BaseInputObserver):
 
     def _handle_event(self, event: object, ecodes: object) -> None:
         if event.type == ecodes.EV_KEY:
-            name = self._normalize_evdev_name(ecodes.KEY.get(event.code, f"key_{event.code}"))
+            if event.value == 2:
+                return
             if ecodes.BTN_MOUSE <= event.code < ecodes.BTN_JOYSTICK:
+                name = normalize_button_name(ecodes.KEY.get(event.code, event.code))
                 self._set_button(name, pressed=event.value != 0)
             else:
+                name = normalize_key_name(ecodes.KEY.get(event.code, f"key_{event.code}"))
                 self._set_key(name, pressed=event.value != 0)
             return
 
@@ -576,33 +642,6 @@ class EvdevInputObserver(_BaseInputObserver):
                 self._set_pointer(x=int(event.value))
             elif event.code == ecodes.ABS_Y:
                 self._set_pointer(y=int(event.value))
-
-    @staticmethod
-    def _normalize_evdev_name(name: str) -> str:
-        normalized = name.lower()
-        if normalized.startswith("key_"):
-            normalized = normalized[4:]
-        elif normalized.startswith("btn_"):
-            normalized = normalized[4:]
-
-        aliases = {
-            "esc": "esc",
-            "return": "enter",
-            "kpenter": "enter",
-            "pagedown": "page_down",
-            "pageup": "page_up",
-            "capslock": "caps_lock",
-            "leftctrl": "ctrl_l",
-            "rightctrl": "ctrl_r",
-            "leftalt": "alt_l",
-            "rightalt": "alt_r",
-            "leftshift": "shift_l",
-            "rightshift": "shift_r",
-            "leftmeta": "cmd_l",
-            "rightmeta": "cmd_r",
-        }
-        return aliases.get(normalized, normalized)
-
 
 class LinuxInputObserver:
     def __init__(self, backend: str = "auto", device_paths: Sequence[str] | None = None) -> None:

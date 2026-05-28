@@ -61,14 +61,14 @@ Input backend selection is also handled in `src/chucrutelm/capture/linux.py`.
 - **X11**: `pynput`
 - **Hyprland / Wayland**: `evdev`
 
-The current user-specific working target device is:
+The wrapper now resolves the target devices by name on each run:
 
 ```text
-/dev/input/event17
 Corne Keyboard
+Logitech G502 HERO
 ```
 
-This is currently wired into the wrapper script:
+This resolution is wired into the wrapper script:
 
 ```bash
 scripts/run_record_session.sh
@@ -92,7 +92,7 @@ Current defaults:
 
 - region: auto-detected from the open Tibia client window when available
 - fps: `5`
-- input device: `/dev/input/event17`
+- input devices: auto-resolved on each run for `Corne Keyboard` and `Logitech G502 HERO`
 - profile: `tibia`
 
 Example:
@@ -180,7 +180,10 @@ from chucrutelm.inference import PolicyRuntime
 The repository now also has a generic live runtime path:
 
 ```bash
-python scripts/run_live_policy.py
+python scripts/run_live_policy.py \
+  --checkpoint output/base-policy \
+  --profile-name tibia \
+  --print-actions
 ```
 
 This path:
@@ -231,7 +234,8 @@ That would make input setup much easier.
 
 ### 3. Mouse movement path
 
-The current wrapper only targets `/dev/input/event17` (Corne keyboard).
+The current wrapper now targets both the Corne keyboard and the Logitech G502 HERO by resolving
+their current `/dev/input/event*` paths before each recording run.
 
 So:
 
@@ -279,3 +283,188 @@ The repository now has a functional **screen -> ASCII -> input snapshot -> label
 
 What it still does **not** have is game-specific orchestration such as pointer targeting,
 hierarchical state routing, or custom UI feature extraction.
+
+## todo
+
+**Implement it in two layers:**  
+1. make the runtime able to **emit mouse movement/clicks**, and  
+2. change the policy/output format so it can choose **where** to click.
+
+## 1. `uinput` access and real emitted input
+
+For real Linux-emitted input, the runtime needs access to `/dev/uinput`.
+
+### System side
+You need:
+```bash
+ls -l /dev/uinput
+```
+
+If it exists but is restricted, grant access via group/udev. Typical setup:
+```bash
+sudo modprobe uinput
+sudo usermod -aG input "$USER"
+```
+
+For persistent permissions, add a udev rule like:
+```bash
+KERNEL=="uinput", GROUP="input", MODE="0660"
+```
+
+Then reload udev / relogin.
+
+### Code side
+Right now `UinputActionBackend` only emits `EV_KEY`.  
+To support pointer control, extend it to also register:
+
+- `EV_REL`: `REL_X`, `REL_Y`
+- optionally `REL_WHEEL`
+- mouse buttons: `BTN_LEFT`, `BTN_RIGHT`
+
+And add methods to the backend protocol:
+
+```python
+def move_pointer_rel(self, dx: int, dy: int) -> None: ...
+def click_button(self, button_name: str) -> None: ...
+```
+
+Then in `UinputActionBackend`:
+
+```python
+capabilities = {
+    ecodes.EV_KEY: key_codes + button_codes,
+    ecodes.EV_REL: [ecodes.REL_X, ecodes.REL_Y],
+}
+```
+
+and emit:
+```python
+self._ui.write(ecodes.EV_REL, ecodes.REL_X, dx)
+self._ui.write(ecodes.EV_REL, ecodes.REL_Y, dy)
+self._ui.syn()
+```
+
+## 2. Pointer-targeted Tibia clicks
+
+The current model predicts discrete actions like `move_up` or `attack_interact`.  
+That is **not enough** for Tibia click-to-move, because click-to-move needs coordinates.
+
+You need a new action type, for example:
+
+```python
+@dataclass
+class PointerAction:
+    action_name: str
+    pointer_target: tuple[int, int] | None = None
+    button: str | None = None
+```
+
+Then the executor can do:
+
+1. move pointer to `(x, y)`
+2. press/release left mouse
+
+## 3. Mapping Tibia world tiles to screen pixels
+
+This is the key missing piece.
+
+### Simplest practical approach
+Treat the Tibia game viewport as a grid and click tile centers.
+
+You need:
+1. the Tibia window bounds — now auto-detected
+2. the **playable map viewport** inside the window
+3. visible grid dimensions, e.g. around the player
+4. tile size in pixels
+
+Then compute:
+
+```python
+screen_x = viewport_left + (tile_x + 0.5) * tile_width
+screen_y = viewport_top + (tile_y + 0.5) * tile_height
+```
+
+If the player is centered, a relative move like `(dx=+1, dy=0)` maps to:
+```python
+tile_x = center_x + dx
+tile_y = center_y + dy
+```
+
+### What to add in this repo
+Add a Tibia-specific extractor/config, e.g.:
+- `window padding / viewport rect`
+- visible tile grid size
+- player center tile
+
+Something like:
+
+```python
+@dataclass
+class TibiaViewport:
+    left: int
+    top: int
+    width: int
+    height: int
+    grid_width: int
+    grid_height: int
+    center_x: int
+    center_y: int
+```
+
+Then helper:
+
+```python
+def tile_to_screen(viewport: TibiaViewport, dx: int, dy: int) -> tuple[int, int]:
+    tile_w = viewport.width / viewport.grid_width
+    tile_h = viewport.height / viewport.grid_height
+    x = viewport.left + (viewport.center_x + dx + 0.5) * tile_w
+    y = viewport.top + (viewport.center_y + dy + 0.5) * tile_h
+    return round(x), round(y)
+```
+
+## 4. Model/output changes
+
+For click-to-move, discrete labels like `move_up` are a fallback, but not the ideal Tibia control space.
+
+Better options:
+
+### Option A: discrete click actions
+Predict:
+- `click_north`
+- `click_south`
+- `click_north_east`
+- etc.
+
+Easy to add, limited precision.
+
+### Option B: relative tile target
+Predict:
+- button = left
+- target tile offset `(dx, dy)`
+
+Much better for Tibia.  
+This likely means moving beyond the current pure classifier into:
+- classifier for action type
+- regressor or discrete grid head for target tile
+
+## 5. Recommended implementation order
+
+1. **Extend `UinputActionBackend`** with relative mouse movement.
+2. **Add pointer methods** to `ActionOutputBackend` and `ActionExecutor`.
+3. **Add a Tibia viewport config** and `tile_to_screen(...)`.
+4. **Add new runtime actions** like `click_tile(dx, dy)`.
+5. **Start with fixed discrete tile clicks** before changing the model architecture.
+6. Later, upgrade training to learn tile targets directly.
+
+## 6. Best near-term version
+
+The fastest useful version on `main` is:
+
+- keep current keyboard-pulse actions
+- add `left_click_tile(dx, dy)` support in the executor
+- hardcode/calibrate Tibia viewport bounds
+- start with a small set of click targets near the player
+
+That gets you real Tibia click-to-move **without** redesigning the whole ML stack first.
+
+If you want, I can implement the **uinput mouse movement layer + Tibia tile-to-screen click executor** next.

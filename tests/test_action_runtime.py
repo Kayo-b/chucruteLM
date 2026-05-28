@@ -3,12 +3,13 @@ from __future__ import annotations
 import unittest
 
 from chucrutelm.control import ActionExecutor, button_name_to_linux_code, key_name_to_linux_code
-from chucrutelm.profiles import GameProfile, build_tibia_profile
+from chucrutelm.config import CaptureRegion
+from chucrutelm.profiles import GameProfile, TibiaViewport, TibiaViewportConfig, build_tibia_profile, tile_to_screen
 
 
 class _FakeBackend:
     def __init__(self) -> None:
-        self.events: list[tuple[str, str]] = []
+        self.events: list[tuple[str, object]] = []
         self.closed = False
 
     def press_key(self, key_name: str) -> None:
@@ -22,6 +23,9 @@ class _FakeBackend:
 
     def release_button(self, button_name: str) -> None:
         self.events.append(("release_button", button_name))
+
+    def move_pointer_rel(self, dx: int, dy: int) -> None:
+        self.events.append(("move_pointer_rel", (dx, dy)))
 
     def close(self) -> None:
         self.closed = True
@@ -130,12 +134,82 @@ class ActionRuntimeTest(unittest.TestCase):
         executor.close()
         self.assertTrue(backend.closed)
 
+    def test_tibia_tile_to_screen_and_pointer_execution(self) -> None:
+        capture_region = CaptureRegion(100, 200, 300, 220)
+        viewport_config = TibiaViewportConfig(
+            left=10,
+            top=20,
+            width=150,
+            height=110,
+            grid_width=15,
+            grid_height=11,
+            center_x=7,
+            center_y=5,
+        )
+        viewport = viewport_config.resolve(capture_region)
+        self.assertEqual(tile_to_screen(viewport, dx=0, dy=0), (185, 275))
+        self.assertEqual(tile_to_screen(viewport, dx=1, dy=-1), (195, 265))
+
+        profile = build_tibia_profile(
+            action_names=["noop", "click_tile_north", "click_tile_east"],
+            viewport_config=viewport_config,
+        )
+        backend = _FakeBackend()
+        clock = _FakeClock()
+        executor = ActionExecutor(
+            profile=profile,
+            backend=backend,
+            button_press_s=0.05,
+            button_repeat_s=0.2,
+            pointer_repeat_s=0.2,
+            initial_pointer_position=profile.default_pointer_position(capture_region),
+            time_fn=clock.time,
+            sleep_fn=clock.sleep,
+        )
+
+        result = executor.apply("click_tile_north", capture_region=capture_region)
+        self.assertEqual(result.clicked_buttons, ("left",))
+        self.assertEqual(result.pointer_target, (185, 265))
+        self.assertEqual(
+            backend.events,
+            [
+                ("move_pointer_rel", (0, -10)),
+                ("press_button", "left"),
+                ("release_button", "left"),
+            ],
+        )
+
+        backend.events.clear()
+        result = executor.apply("click_tile_north", capture_region=capture_region)
+        self.assertEqual(result.clicked_buttons, ())
+        self.assertIsNone(result.pointer_target)
+        self.assertEqual(backend.events, [])
+
+        clock.now += 0.25
+        backend.events.clear()
+        result = executor.apply("click_tile_east", capture_region=capture_region)
+        self.assertEqual(result.pointer_target, (195, 275))
+        self.assertEqual(
+            backend.events,
+            [
+                ("move_pointer_rel", (10, 10)),
+                ("press_button", "left"),
+                ("release_button", "left"),
+            ],
+        )
+
     def test_tibia_profile_uses_tibia_defaults(self) -> None:
-        profile = build_tibia_profile(action_names=["move_up", "move_up_left", "attack_interact", "open_battle_list"])
+        capture_region = CaptureRegion(0, 0, 150, 110)
+        profile = build_tibia_profile(
+            action_names=["move_up", "move_up_left", "attack_interact", "open_battle_list", "click_tile_north"],
+            viewport_config=TibiaViewportConfig(width=150, height=110),
+        )
         self.assertEqual(profile.tapped_keys_for_action("move_up"), ("up",))
         self.assertEqual(profile.tapped_keys_for_action("move_up_left"), ("kp7",))
         self.assertEqual(profile.clicked_buttons_for_action("attack_interact"), ("left",))
         self.assertEqual(profile.tapped_keys_for_action("open_battle_list"), ("ctrl_l", "b"))
+        self.assertEqual(profile.default_pointer_position(capture_region), (75, 55))
+        self.assertEqual(profile.resolve_pointer_action("click_tile_north", capture_region).pointer_target, (75, 45))
         self.assertEqual(
             profile.infer_action({"pressed_keys": ("ctrl_l", "b"), "pressed_buttons": ()}),
             "open_battle_list",
@@ -148,6 +222,39 @@ class ActionRuntimeTest(unittest.TestCase):
         self.assertEqual(
             shortcut_profile.infer_action({"pressed_keys": ("ctrl_l", "s"), "pressed_buttons": ()}),
             "open_skills_window",
+        )
+        self.assertEqual(
+            profile.infer_action(
+                {
+                    "pressed_keys": (),
+                    "pressed_buttons": (),
+                    "tapped_keys": ("up",),
+                    "tapped_buttons": (),
+                }
+            ),
+            "move_up",
+        )
+        self.assertEqual(
+            profile.infer_action(
+                {
+                    "pressed_keys": (),
+                    "pressed_buttons": (),
+                    "tapped_keys": (),
+                    "tapped_buttons": ("left",),
+                }
+            ),
+            "attack_interact",
+        )
+        self.assertEqual(
+            build_tibia_profile(action_names=["noop", "move_up"]).infer_action(
+                {
+                    "pressed_keys": (),
+                    "pressed_buttons": (),
+                    "tapped_keys": (),
+                    "tapped_buttons": (),
+                }
+            ),
+            "noop",
         )
 
 
