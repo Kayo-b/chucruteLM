@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 import sys
 
@@ -53,11 +54,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--actions")
     parser.add_argument("--key-binding", action="append", default=[])
     parser.add_argument("--button-binding", action="append", default=[])
+    parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     if args.list_input_devices:
         for entry in describe_evdev_devices():
             if "error" in entry:

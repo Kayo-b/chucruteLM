@@ -9,6 +9,7 @@ from .linux import (
     find_window,
     is_wayland_session,
     list_open_windows,
+    parse_wmctrl_output,
     resolve_capture_region,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "find_window",
     "is_wayland_session",
     "list_open_windows",
+    "parse_wmctrl_output",
     "resolve_capture_region",
 ]

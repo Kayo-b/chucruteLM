@@ -148,7 +148,6 @@ class BehaviorCloningDataset(Dataset):
         tokenizer: AsciiGridTokenizer,
         action_space: ActionSpace,
         grid_size: GridSize,
-        feature_names: list[str] | None = None,
         profile: GameProfile | None = None,
     ) -> None:
         self.tokenizer = tokenizer
@@ -171,27 +170,14 @@ class BehaviorCloningDataset(Dataset):
         if not self.records:
             raise ValueError("No labeled frames were found in the manifest.")
 
-        if feature_names is None:
-            feature_keys = set()
-            for record in self.records:
-                feature_keys.update(record.observation.numeric_features.keys())
-            self.feature_names = sorted(feature_keys)
-        else:
-            self.feature_names = list(feature_names)
-
     def __len__(self) -> int:
         return len(self.records)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         record = self.records[index]
         grid_ids = self.tokenizer.encode_grid(record.observation.ascii_text, self.grid_size)
-        numeric_values = [
-            float(record.observation.numeric_features.get(name, 0.0))
-            for name in self.feature_names
-        ]
         return {
             "grid_ids": grid_ids,
-            "numeric_features": torch.tensor(numeric_values, dtype=torch.float32),
             "label": torch.tensor(self.action_space.index(record.action.action_name), dtype=torch.long),
         }
 
@@ -199,6 +185,14 @@ class BehaviorCloningDataset(Dataset):
         counts = {name: 0 for name in self.action_space.names}
         for record in self.records:
             counts[record.action.action_name] += 1
+        return counts
+
+    def label_counts(self, indices: list[int] | None = None) -> torch.Tensor:
+        counts = torch.zeros(len(self.action_space), dtype=torch.float32)
+        source = indices if indices is not None else range(len(self.records))
+        for idx in source:
+            label = self.action_space.index(self.records[idx].action.action_name)
+            counts[label] += 1.0
         return counts
 
 

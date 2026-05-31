@@ -69,11 +69,48 @@ def parse_hyprctl_clients(payload: str) -> list[LinuxWindow]:
     return windows
 
 
+def parse_wmctrl_output(payload: str) -> list[LinuxWindow]:
+    windows: list[LinuxWindow] = []
+    for line in payload.splitlines():
+        # Format: <wid> <desktop> <x> <y> <w> <h> <hostname> <WM_CLASS> <title>
+        parts = line.split(None, 8)
+        if len(parts) < 9:
+            continue
+        try:
+            x = int(parts[2])
+            y = int(parts[3])
+            w = int(parts[4])
+            h = int(parts[5])
+        except ValueError:
+            continue
+        wm_class = parts[7]  # "instance.Class" — store as-is for substring matching
+        title = parts[8].strip()
+        windows.append(
+            LinuxWindow(
+                class_name=wm_class,
+                title=title,
+                region=CaptureRegion(x, y, w, h),
+                workspace=parts[1],
+            )
+        )
+    return windows
+
+
 def list_open_windows(env: Mapping[str, str] | None = None) -> list[LinuxWindow]:
     current_env = _session_env(env)
-    if is_wayland_session(current_env) and shutil.which("hyprctl") is not None:
-        return parse_hyprctl_clients(_run_command(("hyprctl", "clients", "-j")))
-    raise RuntimeError("Automatic window detection is currently supported on Hyprland/Wayland only.")
+    if is_wayland_session(current_env):
+        if shutil.which("hyprctl") is not None:
+            return parse_hyprctl_clients(_run_command(("hyprctl", "clients", "-j")))
+        raise RuntimeError(
+            "Automatic window detection on Wayland requires Hyprland with hyprctl. "
+            "Provide --left/--top/--width/--height to specify the capture region manually."
+        )
+    if shutil.which("wmctrl") is None:
+        raise RuntimeError(
+            "X11 window detection requires wmctrl. "
+            "Install it with: sudo apt install wmctrl"
+        )
+    return parse_wmctrl_output(_run_command(("wmctrl", "-l", "-G", "-x")))
 
 
 def find_window(

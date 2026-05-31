@@ -20,8 +20,6 @@ if [[ -x "${repo_root}/.venv/bin/python" ]]; then
   python_bin="${repo_root}/.venv/bin/python"
 fi
 
-mapfile -t input_devices < <("${python_bin}" scripts/resolve_record_input_devices.py)
-
 cmd=(
   "${python_bin}" scripts/record_session.py
   --output "${output_dir}"
@@ -30,9 +28,20 @@ cmd=(
   --profile-name tibia
 )
 
-for device in "${input_devices[@]}"; do
-  echo "${device}"
-  cmd+=(--input-device "${device}")
-done
+# On Wayland, evdev is used and needs explicit device paths.
+# On X11, pynput auto-discovers input via the display server — no device paths needed.
+_is_wayland() {
+  [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]] \
+    || [[ -n "${WAYLAND_DISPLAY:-}" ]] \
+    || [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]
+}
+
+if _is_wayland; then
+  mapfile -t input_devices < <("${python_bin}" scripts/resolve_record_input_devices.py)
+  for device in "${input_devices[@]}"; do
+    echo "${device}"
+    cmd+=(--input-device "${device}")
+  done
+fi
 
 exec "${cmd[@]}"

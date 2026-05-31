@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 import sys
 
@@ -32,12 +33,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--eval-split", type=float, default=0.1)
-    parser.add_argument("--feature-names", default="")
+    parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     manifest_path = args.data / "manifest.jsonl"
     configured_action_names = (
         [name.strip() for name in args.actions.split(",") if name.strip()]
@@ -58,20 +63,17 @@ def main() -> None:
         raise SystemExit(f"No labeled actions were found in {manifest_path}")
     action_space = ActionSpace.from_names(action_names)
     tokenizer = AsciiGridTokenizer()
-    feature_names = [name.strip() for name in args.feature_names.split(",") if name.strip()] or None
     dataset = BehaviorCloningDataset(
         manifest_path=manifest_path,
         tokenizer=tokenizer,
         action_space=action_space,
         grid_size=GridSize(args.grid_width, args.grid_height),
-        feature_names=feature_names,
         profile=profile,
     )
     train_dataset, eval_dataset = split_dataset(dataset, eval_ratio=args.eval_split, seed=42)
     model_config = ModelConfig(
         grid_size=GridSize(args.grid_width, args.grid_height),
         vocab_size=len(tokenizer.charset),
-        numeric_feature_dim=len(dataset.feature_names),
         num_actions=len(action_space),
     )
     model = AsciiGridPolicyModel(model_config)
@@ -88,7 +90,7 @@ def main() -> None:
         ),
     )
     best_accuracy = trainer.train(train_dataset, eval_dataset)
-    trainer.save_metadata(model_config, dataset.feature_names)
+    trainer.save_metadata(model_config)
     print(f"Best eval accuracy: {best_accuracy:.2%}")
     print(f"Parameter count: {model.parameter_count():,}")
 

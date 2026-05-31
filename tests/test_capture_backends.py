@@ -12,6 +12,7 @@ from chucrutelm.capture.linux import (
     find_window,
     is_wayland_session,
     parse_hyprctl_clients,
+    parse_wmctrl_output,
     resolve_evdev_device,
     resolve_capture_region,
 )
@@ -85,6 +86,24 @@ class CaptureBackendSelectionTest(unittest.TestCase):
         self.assertEqual(len(windows), 2)
         self.assertEqual(windows[1].class_name, "com.tibia.client")
         self.assertEqual(windows[1].region, CaptureRegion(22, 152, 1300, 900))
+
+    def test_parse_wmctrl_output_extracts_windows(self) -> None:
+        payload = (
+            "0x01800001  0 0    28   1920 1052 myhost tibia.Tibia  Tibia\n"
+            "0x01800002  0 1920  0   1280  800 myhost firefox.Firefox  Mozilla Firefox\n"
+        )
+        windows = parse_wmctrl_output(payload)
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(windows[0].class_name, "tibia.Tibia")
+        self.assertEqual(windows[0].title, "Tibia")
+        self.assertEqual(windows[0].region, CaptureRegion(0, 28, 1920, 1052))
+        self.assertEqual(windows[1].class_name, "firefox.Firefox")
+        self.assertEqual(windows[1].region, CaptureRegion(1920, 0, 1280, 800))
+
+    def test_parse_wmctrl_output_skips_malformed_lines(self) -> None:
+        payload = "0x01800001  0 bad 28 1920 1052 myhost tibia.Tibia  Tibia\n"
+        windows = parse_wmctrl_output(payload)
+        self.assertEqual(windows, [])
 
     def test_find_window_prefers_exact_class_match(self) -> None:
         from unittest.mock import patch

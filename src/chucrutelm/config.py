@@ -43,8 +43,6 @@ class ModelConfig:
     vocab_size: int = 128
     embedding_dim: int = 48
     channels: tuple[int, ...] = (96, 128, 192, 192)
-    numeric_feature_dim: int = 0
-    numeric_hidden_dim: int = 64
     classifier_hidden_dim: int = 256
     num_actions: int = 8
     dropout: float = 0.1
@@ -63,8 +61,6 @@ class ModelConfig:
             vocab_size=int(payload["vocab_size"]),
             embedding_dim=int(payload["embedding_dim"]),
             channels=tuple(int(value) for value in payload["channels"]),
-            numeric_feature_dim=int(payload["numeric_feature_dim"]),
-            numeric_hidden_dim=int(payload["numeric_hidden_dim"]),
             classifier_hidden_dim=int(payload["classifier_hidden_dim"]),
             num_actions=int(payload["num_actions"]),
             dropout=float(payload["dropout"]),

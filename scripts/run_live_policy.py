@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 import sys
 
@@ -62,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tibia-center-x", type=int, default=7)
     parser.add_argument("--tibia-center-y", type=int, default=5)
     parser.add_argument("--print-actions", action="store_true")
+    parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 
@@ -73,6 +75,10 @@ def main() -> None:
     from chucrutelm.profiles import TibiaViewportConfig, build_profile, default_window_selectors
 
     args = build_parser().parse_args()
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     if args.list_windows:
         for window in list_open_windows():
             print(

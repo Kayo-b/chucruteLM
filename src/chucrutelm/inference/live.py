@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 import time
 
@@ -8,6 +9,8 @@ from ..capture import ScreenCaptureBackend
 from ..control import ActionExecutor, ExecutedAction
 from ..profiles import GameProfile
 from .runtime import PolicyRuntime
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -46,22 +49,26 @@ class LivePolicyRunner:
                     break
                 if now < next_tick:
                     time.sleep(next_tick - now)
-                captured = self.capture_backend.capture()
+                try:
+                    captured = self.capture_backend.capture()
+                except Exception as exc:
+                    logger.warning("Capture failed, skipping frame: %s", exc)
+                    next_tick += interval_s
+                    continue
                 ascii_text = self.ascii_converter.convert_simple(captured.grayscale)
-                numeric_features = self.profile.extract_numeric_features(captured.grayscale)
-                action_name, logits = self.runtime.predict(ascii_text, numeric_features)
+                action_name, logits = self.runtime.predict(ascii_text)
                 result = self.action_executor.apply(action_name, capture_region=captured.region)
                 executed += 1
                 if self.config.print_actions:
                     confidence = float(logits.softmax(dim=-1).max().item())
-                    self._print_action(result, confidence)
+                    self._log_action(result, confidence)
                 next_tick += interval_s
         finally:
             self.action_executor.close()
         return executed
 
     @staticmethod
-    def _print_action(result: ExecutedAction, confidence: float) -> None:
+    def _log_action(result: ExecutedAction, confidence: float) -> None:
         suffix_parts = []
         if result.held_keys:
             suffix_parts.append(f"keys={','.join(result.held_keys)}")
@@ -72,4 +79,4 @@ class LivePolicyRunner:
         if result.pointer_target is not None:
             suffix_parts.append(f"pointer={result.pointer_target[0]},{result.pointer_target[1]}")
         suffix = f" ({'; '.join(suffix_parts)})" if suffix_parts else ""
-        print(f"{result.action_name} confidence={confidence:.2%}{suffix}")
+        logger.info("%s confidence=%.2f%%%s", result.action_name, confidence * 100, suffix)

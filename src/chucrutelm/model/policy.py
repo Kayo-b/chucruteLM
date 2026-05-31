@@ -47,42 +47,20 @@ class AsciiGridPolicyModel(nn.Module):
         )
         self.pool = nn.AdaptiveAvgPool2d(1)
 
-        if config.numeric_feature_dim > 0:
-            self.numeric_mlp = nn.Sequential(
-                nn.Linear(config.numeric_feature_dim, config.numeric_hidden_dim),
-                nn.GELU(),
-                nn.LayerNorm(config.numeric_hidden_dim),
-            )
-            fused_dim = config.channels[-1] + config.numeric_hidden_dim
-        else:
-            self.numeric_mlp = None
-            fused_dim = config.channels[-1]
-
         self.classifier = nn.Sequential(
-            nn.Linear(fused_dim, config.classifier_hidden_dim),
+            nn.Linear(config.channels[-1], config.classifier_hidden_dim),
             nn.GELU(),
             nn.Dropout(config.dropout),
             nn.Linear(config.classifier_hidden_dim, config.num_actions),
         )
 
-    def forward(
-        self,
-        grid_ids: torch.Tensor,
-        numeric_features: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    def forward(self, grid_ids: torch.Tensor) -> torch.Tensor:
         if grid_ids.dim() != 3:
             raise ValueError("grid_ids must have shape [batch, height, width].")
         x = self.embedding(grid_ids)
         x = x.permute(0, 3, 1, 2)
         x = self.conv_tower(x)
         x = self.pool(x).flatten(start_dim=1)
-
-        if self.numeric_mlp is not None:
-            if numeric_features is None:
-                raise ValueError("numeric_features are required by this model config.")
-            numeric = self.numeric_mlp(numeric_features)
-            x = torch.cat([x, numeric], dim=1)
-
         return self.classifier(x)
 
     def parameter_count(self) -> int:
