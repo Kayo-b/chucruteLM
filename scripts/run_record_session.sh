@@ -37,7 +37,7 @@ _is_wayland() {
 }
 
 if _is_wayland; then
-  mapfile -t input_devices < <("${python_bin}" scripts/resolve_record_input_devices.py)
+  mapfile -t input_devices < <("${python_bin}" scripts/resolve_record_input_devices.py --keyboard-name "ZMK Project Corne Keyboard" --mouse-name "Logitech G502 HERO Gaming Mouse")
   for device in "${input_devices[@]}"; do
     echo "${device}"
     cmd+=(--input-device "${device}")

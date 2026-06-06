@@ -20,10 +20,44 @@ The strategy is to finish Tibia end-to-end first, then extract smaller reusable 
 - `main`: Tibia-focused implementation
 - future branches: extract or adapt patterns for other games only after the Tibia pipeline is proven
 
-## Quick start
+## Setup
+
+On most modern Linux distributions (especially Arch, Ubuntu 23.10+, Fedora, etc.), Python enforces [PEP 668](https://peps.python.org/pep-0668/) which prevents package installation outside of a virtual environment.
+
+**Create a virtual environment:**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+**Then install the project:**
 
 ```bash
 pip install -e .
+```
+
+After setup, always activate the venv before running scripts:
+
+```bash
+source .venv/bin/activate
+```
+
+Or use the venv Python directly without activating:
+
+```bash
+./.venv/bin/python scripts/record_session.py ...
+```
+
+## Quick start
+
+Once the venv is set up and activated:
+
+```bash
+./scripts/setup_env.sh
+
+# Optional for current shell session
+source .venv/bin/activate
 
 # Record a Tibia screen region on X11 or Hyprland
 python scripts/record_session.py \
@@ -89,8 +123,8 @@ requires permission to read `/dev/input/event*`. You can override either choice 
 
 `scripts/run_record_session.sh` now auto-resolves the readable evdev paths for:
 
-- `Corne Keyboard` as the keyboard device
-- `Logitech G502 HERO` as the mouse device
+- `ZMK Project Corne Keyboard` as the keyboard device
+- `Logitech G502 HERO Gaming Mouse` as the mouse device
 
 Live action emission uses a separate backend:
 
@@ -99,6 +133,30 @@ Live action emission uses a separate backend:
   relative pointer motion for Tibia tile-click actions
 
 `uinput` requires `/dev/uinput` to exist and be writable.
+
+If live policy fails with `evdev.uinput.UInputError: "/dev/uinput" cannot be opened for writing`,
+fix permissions for `/dev/uinput`.
+
+Quick temporary workaround:
+
+```bash
+sudo modprobe uinput
+sudo chmod 666 /dev/uinput
+```
+
+Recommended persistent setup:
+
+```bash
+sudo groupadd -f uinput
+sudo usermod -aG uinput "$USER"
+sudo tee /etc/udev/rules.d/99-uinput.rules >/dev/null <<'EOF'
+KERNEL=="uinput", MODE="0660", GROUP="uinput", OPTIONS+="static_node=uinput"
+EOF
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Then log out and back in (or reboot) so new group membership is applied.
 
 Tibia live execution pulses keyboard actions by default instead of holding them indefinitely, which
 fits tile-based movement and shortcut-style hotkeys better than a raw key-down latch.
